@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>バディ・ラッシュ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=M+PLUS+1p:wght@500;800&display=swap">
+<style>
+/* Layout: one full-screen stage, controls docked at the bottom */
+:root{
+  --ink:#140f1f; --stage:#21173a; --glow:#ffcf3a; --spirit:#7fe0ff; --hot:#ff4f6d; --paper:#f4efff;
+  --display:"Dela Gothic One","Hiragino Sans","Yu Gothic",sans-serif;
+  --body:"M PLUS 1p","Hiragino Sans","Yu Gothic",sans-serif;
+  color-scheme:dark;
+}
+html,body{height:100%;margin:0}
+body{background:var(--ink);color:var(--paper);font-family:var(--body);overflow:hidden;
+  padding-left:max(0px,env(safe-area-inset-left,0px));padding-right:max(0px,env(safe-area-inset-right,0px))}
+#stage{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:manipulation}
+header{position:fixed;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top,0px) + 14px) max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-area-inset-left,0px));
+  display:flex;justify-content:space-between;align-items:flex-start;gap:12px;pointer-events:none}
+h1{font-family:var(--display);font-weight:400;font-size:clamp(20px,4vw,32px);margin:0;letter-spacing:.04em;color:var(--glow);text-shadow:3px 3px 0 var(--hot)}
+.combo{font-family:var(--display);text-align:right;line-height:1}
+.combo b{display:block;font-size:clamp(32px,7vw,64px);font-weight:400;color:var(--spirit);font-variant-numeric:tabular-nums}
+.combo span{font-size:12px;letter-spacing:.2em;opacity:.8}
+footer{position:fixed;left:0;right:0;bottom:0;padding:12px max(16px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 14px) max(16px,env(safe-area-inset-left,0px));
+  display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;background:linear-gradient(transparent,rgba(20,15,31,.92) 40%)}
+button,select{font-family:var(--body);font-weight:800;font-size:15px;border-radius:999px;border:2px solid var(--paper);background:transparent;color:var(--paper);padding:10px 18px;cursor:pointer}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--glow);outline-offset:2px}
+#micBtn{background:var(--glow);color:var(--ink);border-color:var(--glow)}
+#micBtn.on{background:var(--hot);border-color:var(--hot);color:#fff}
+label{display:flex;gap:8px;align-items:center;font-size:13px}
+input[type=range]{accent-color:var(--glow);width:110px}
+.meter{width:120px;height:8px;border-radius:4px;background:rgba(255,255,255,.15);overflow:hidden}
+.meter i{display:block;height:100%;width:0;background:var(--spirit)}
+#status{width:100%;text-align:center;font-size:13px;opacity:.85;min-height:1.3em}
+#heard{font-family:var(--display);color:var(--glow)}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<header>
+  <h1>バディ・ラッシュ</h1>
+  <div class="combo"><b id="combo">0</b><span>HITS</span></div>
+</header>
+<footer>
+  <button id="micBtn" type="button">🎤 マイクON</button>
+  <select id="mode" aria-label="反応モード">
+    <option value="volume">声の大きさで反応</option>
+    <option value="speech">「無駄」を聞き取って反応</option>
+  </select>
+  <label for="sens">感度 <input id="sens" type="range" min="1" max="10" value="6"></label>
+  <div class="meter" aria-hidden="true"><i id="lvl"></i></div>
+  <button id="tapBtn" type="button">タップで3秒ラッシュ</button>
+  <div id="status">マイクONを押して「無駄無駄無駄…！」と叫んでください</div>
+</footer>
+<script>
+const cv=document.getElementById('stage'),ctx=cv.getContext('2d');
+let W,H,DPR;
+function resize(){DPR=Math.min(2,window.devicePixelRatio||1);W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0)}
+addEventListener('resize',resize);resize();
+
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+let rushUntil=0,combo=0,fists=[],texts=[],shake=0,t0=performance.now(),lastPunch=0,bagHit=0;
+const comboEl=document.getElementById('combo'),statusEl=document.getElementById('status');
+
+function rush(ms){rushUntil=Math.max(rushUntil,performance.now()+ms)}
+
+// ---- audio (bonk) ----
+let actx=null;
+function bonk(){
+  if(!actx)return;
+  const o=actx.createOscillator(),g=actx.createGain(),f=90+Math.random()*60;
+  o.type='square';o.frequency.setValueAtTime(f*2,actx.currentTime);o.frequency.exponentialRampToValueAtTime(f*.5,actx.currentTime+.08);
+  g.gain.setValueAtTime(.12,actx.currentTime);g.gain.exponentialRampToValueAtTime(.001,actx.currentTime+.09);
+  o.connect(g).connect(actx.destination);o.start();o.stop(actx.currentTime+.1);
+}
+
+// ---- geometry ----
+function geo(){
+  const s=Math.min(W,H)/620;
+  const cx=W*(W>H?0.38:0.42), cy=H*0.56;
+  const bag={x:W*(W>H?0.78:0.82),y:cy-20*s,r:70*s};
+  return {s,cx,cy,bag};
+}
+
+function punch(){
+  const {s,cx,cy,bag}=geo();
+  const sx=cx+40*s, sy=cy-70*s;
+  const tx=bag.x-bag.r*0.6+(Math.random()-.5)*bag.r*.8, ty=bag.y+(Math.random()-.5)*bag.r*1.6;
+  fists.push({sx,sy:sy+(Math.random()-.5)*60*s,tx,ty,life:0,left:Math.random()<.5});
+  combo++;comboEl.textContent=combo;bagHit=1;shake=reduce?0:6;bonk();
+  if(combo%3===0)texts.push({x:bag.x+(Math.random()-.4)*bag.r*2.6,y:bag.y-bag.r*1.4+(Math.random()-.5)*bag.r*2,txt:'ムキッ',life:0,rot:(Math.random()-.5)*.5,size:(28+Math.random()*26)*s});
+}
+
+// ---- drawing ----
+function roundRect(x,y,w,h,r){ctx.beginPath();ctx.roundRect?ctx.roundRect(x,y,w,h,r):ctx.rect(x,y,w,h)}
+function drawFist(x,y,s,a,flip){
+  ctx.save();ctx.translate(x,y);ctx.globalAlpha=a;
+  ctx.fillStyle='#7fe0ff';ctx.strokeStyle='#ffffff';ctx.lineWidth=3*s;
+  roundRect(-22*s,-20*s,44*s,40*s,12*s);ctx.fill();ctx.stroke();
+  ctx.strokeStyle='rgba(20,15,31,.5)';ctx.lineWidth=2*s;
+  for(let i=-1;i<=1;i++){ctx.beginPath();ctx.moveTo(10*s,i*11*s-4*s);ctx.lineTo(22*s,i*11*s-4*s);ctx.stroke()}
+  ctx.fillStyle='#ffcf3a';roundRect(-30*s,-14*s,10*s,28*s,4*s);ctx.fill(); // wristband
+  ctx.restore();
+}
+function drawBuddy(now,rushing){
+  const {s,cx,cy}=geo();
+  const bob=Math.sin(now/300)*6*s;
+  const y=cy+bob;
+  // aura
+  const g=ctx.createRadialGradient(cx,y-60*s,10*s,cx,y-60*s,230*s);
+  g.addColorStop(0,rushing?'rgba(255,207,58,.45)':'rgba(127,224,255,.25)');g.addColorStop(1,'rgba(127,224,255,0)');
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,y-60*s,230*s,0,Math.PI*2);ctx.fill();
+  ctx.save();ctx.globalAlpha=.92;
+  // legs (fade out like a spirit)
+  const lg=ctx.createLinearGradient(0,y+20*s,0,y+170*s);lg.addColorStop(0,'#5fc9ee');lg.addColorStop(1,'rgba(95,201,238,0)');
+  ctx.fillStyle=lg;ctx.beginPath();ctx.moveTo(cx-55*s,y+20*s);ctx.quadraticCurveTo(cx,y+200*s,cx+55*s,y+20*s);ctx.fill();
+  // torso (V shape)
+  ctx.fillStyle='#7fe0ff';ctx.strokeStyle='#e9fbff';ctx.lineWidth=3*s;
+  ctx.beginPath();ctx.moveTo(cx-95*s,y-120*s);ctx.quadraticCurveTo(cx,y-145*s,cx+95*s,y-120*s);
+  ctx.quadraticCurveTo(cx+70*s,y-20*s,cx+45*s,y+30*s);ctx.lineTo(cx-45*s,y+30*s);ctx.quadraticCurveTo(cx-70*s,y-20*s,cx-95*s,y-120*s);ctx.fill();ctx.stroke();
+  // abs + pecs lines
+  ctx.strokeStyle='rgba(20,15,31,.35)';ctx.lineWidth=2.5*s;
+  ctx.beginPath();ctx.moveTo(cx,y-118*s);ctx.lineTo(cx,y+25*s);ctx.stroke();
+  ctx.beginPath();ctx.arc(cx-35*s,y-95*s,32*s,.3,2.6);ctx.stroke();ctx.beginPath();ctx.arc(cx+35*s,y-95*s,32*s,.55,2.85);ctx.stroke();
+  for(let i=0;i<3;i++){ctx.beginPath();ctx.moveTo(cx-24*s,y-40*s+i*22*s);ctx.lineTo(cx+24*s,y-40*s+i*22*s);ctx.stroke()}
+  // shoulders
+  ctx.fillStyle='#7fe0ff';ctx.strokeStyle='#e9fbff';ctx.lineWidth=3*s;
+  [[-1],[1]].forEach(([d])=>{ctx.beginPath();ctx.arc(cx+d*98*s,y-112*s,30*s,0,Math.PI*2);ctx.fill();ctx.stroke()});
+  // head
+  ctx.beginPath();ctx.arc(cx,y-180*s,38*s,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#ff4f6d';roundRect(cx-40*s,y-200*s,80*s,14*s,6*s);ctx.fill(); // headband
+  ctx.beginPath();ctx.moveTo(cx-38*s,y-195*s);ctx.lineTo(cx-70*s,y-205*s+Math.sin(now/90)*6*s);ctx.lineTo(cx-66*s,y-186*s);ctx.fill();
+  // eyes
+  ctx.fillStyle='#140f1f';
+  const eh=rushing?3*s:6*s;
+  roundRect(cx-18*s,y-180*s,12*s,eh,2*s);ctx.fill();roundRect(cx+6*s,y-180*s,12*s,eh,2*s);ctx.fill();
+  // mouth
+  ctx.strokeStyle='#140f1f';ctx.lineWidth=3*s;ctx.beginPath();
+  if(rushing){ctx.ellipse(cx,y-160*s,10*s,7*s,0,0,Math.PI*2);ctx.fillStyle='#140f1f';ctx.fill()}
+  else{ctx.arc(cx,y-166*s,10*s,.2,Math.PI-.2);ctx.stroke()}
+  ctx.restore();
+  // idle fists when not rushing
+  if(!rushing){drawFist(cx+95*s,y-60*s,s,1);drawFist(cx-95*s,y-60*s,s,1)}
+  // chest label
+  ctx.fillStyle='rgba(20,15,31,.55)';ctx.font=`${14*s}px ${getComputedStyle(document.documentElement).getPropertyValue('--display')}`;
+  ctx.textAlign='center';ctx.fillText('BUDDY',cx,y-62*s);
+}
+function drawBag(now){
+  const {s,bag}=geo();
+  const sway=Math.sin(now/120)*bagHit*14*s;
+  ctx.save();ctx.translate(bag.x+sway,bag.y);ctx.rotate(sway*0.004);
+  ctx.strokeStyle='#8a7fa8';ctx.lineWidth=3*s;ctx.beginPath();ctx.moveTo(0,-bag.r*2);ctx.lineTo(0,-bag.r*1.3);ctx.stroke();
+  ctx.fillStyle=bagHit>.3?'#ff4f6d':'#c33b55';ctx.strokeStyle='#f4efff';
+  roundRect(-bag.r*.6,-bag.r*1.3,bag.r*1.2,bag.r*2.6,bag.r*.5);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#ffcf3a';roundRect(-bag.r*.6,-bag.r*.2,bag.r*1.2,bag.r*.3,2);ctx.fill();
+  ctx.restore();
+}
+function loop(now){
+  const rushing=now<rushUntil;
+  if(rushing&&now-lastPunch>(reduce?160:55)){punch();lastPunch=now}
+  ctx.save();
+  if(shake>0){ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);shake*=.85}
+  ctx.fillStyle='#21173a';ctx.fillRect(-20,-20,W+40,H+40);
+  // speed lines
+  if(rushing&&!reduce){ctx.strokeStyle='rgba(255,207,58,.18)';ctx.lineWidth=2;const {bag}=geo();
+    for(let i=0;i<22;i++){const a=Math.random()*Math.PI*2,r1=60+Math.random()*80,r2=r1+200+Math.random()*400;
+      ctx.beginPath();ctx.moveTo(bag.x+Math.cos(a)*r1,bag.y+Math.sin(a)*r1);ctx.lineTo(bag.x+Math.cos(a)*r2,bag.y+Math.sin(a)*r2);ctx.stroke()}}
+  // floor
+  ctx.fillStyle='#181029';ctx.fillRect(0,H*0.82,W,H);
+  drawBag(now);
+  drawBuddy(now,rushing);
+  const {s}=geo();
+  // flying fists
+  fists=fists.filter(f=>f.life<1);
+  for(const f of fists){f.life+=reduce?.08:.16;const p=Math.min(1,f.life*1.6);
+    const x=f.sx+(f.tx-f.sx)*p,y=f.sy+(f.ty-f.sy)*p;
+    for(let k=3;k>0;k--){const pp=Math.max(0,p-k*.12);drawFist(f.sx+(f.tx-f.sx)*pp,f.sy+(f.ty-f.sy)*pp,s*.9,.15)}
+    drawFist(x,y,s,1-Math.max(0,f.life-.6)*2.5);
+    if(p>=1){ctx.fillStyle='rgba(255,255,255,.8)';ctx.beginPath();ctx.arc(f.tx,f.ty,(1-f.life)*30*s,0,Math.PI*2);ctx.fill()}}
+  // shouts
+  texts=texts.filter(t=>t.life<1);
+  for(const t of texts){t.life+=.025;ctx.save();ctx.translate(t.x,t.y-t.life*30*s);ctx.rotate(t.rot);ctx.globalAlpha=1-t.life;
+    ctx.font=`${t.size}px "Dela Gothic One","Hiragino Sans",sans-serif`;ctx.textAlign='center';
+    ctx.lineWidth=6*s;ctx.strokeStyle='#140f1f';ctx.strokeText(t.txt,0,0);ctx.fillStyle='#ffcf3a';ctx.fillText(t.txt,0,0);ctx.restore()}
+  if(rushing){ctx.save();ctx.font=`${Math.max(36,64*s)}px "Dela Gothic One","Hiragino Sans",sans-serif`;ctx.textAlign='center';
+    ctx.lineWidth=8;ctx.strokeStyle='#140f1f';ctx.fillStyle='#ff4f6d';const yy=H*0.2+Math.sin(now/60)*4;
+    ctx.strokeText('ムキムキムキムキ！',W/2,yy);ctx.fillText('ムキムキムキムキ！',W/2,yy);ctx.restore()}
+  ctx.restore();
+  bagHit*=.9;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---- manual ----
+// 1回押すと3秒間ラッシュ。押すたびに延長
+function tapRush(){ensureAudio();rush(3000)}
+const tapBtn=document.getElementById('tapBtn');
+tapBtn.addEventListener('click',tapRush);
+cv.addEventListener('click',tapRush);
+addEventListener('contextmenu',e=>e.preventDefault());
+addEventListener('keydown',e=>{if(e.code==='Space'||e.key===' '){e.preventDefault();if(!e.repeat)tapRush()}});
+function ensureAudio(){if(!actx){try{actx=new (window.AudioContext||window.webkitAudioContext)()}catch(e){}}if(actx&&actx.state==='suspended')actx.resume()}
+
+// ---- mic ----
+const micBtn=document.getElementById('micBtn'),modeSel=document.getElementById('mode'),sens=document.getElementById('sens'),lvl=document.getElementById('lvl');
+let stream=null,analyser=null,rec=null,micOn=false,lastCount=0,noise=0.003,frameN=0;
+if(!window.isSecureContext||!navigator.mediaDevices){setTimeout(()=>{statusEl.textContent='⚠ この開き方ではマイクが使えません。パソコンのChromeでファイルを開いてください'},0)}
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+if(!SR){modeSel.querySelector('[value=speech]').disabled=true}
+
+micBtn.addEventListener('click',async()=>{
+  ensureAudio();
+  if(micOn){stopMic();return}
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){statusEl.textContent='この画面ではマイクが使えません。ファイルをダウンロードしてChromeで直接開いてください';return}
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:true}});
+  }catch(e){statusEl.textContent='マイクが使えませんでした。アドレスバー左のアイコンからマイクを「許可」にしてください（スペース長押しは使えます）';return}
+  await actx.resume();
+  const src=actx.createMediaStreamSource(stream);analyser=actx.createAnalyser();analyser.fftSize=1024;src.connect(analyser);
+  noise=0.003;
+  micOn=true;micBtn.classList.add('on');micBtn.textContent='■ マイクOFF';
+  startSpeech();volumeLoop();
+  statusEl.textContent=modeSel.value==='speech'?'「無駄無駄無駄…」と言ってください':'叫ぶと連打します';
+});
+function stopMic(){micOn=false;stream&&stream.getTracks().forEach(t=>t.stop());stream=null;try{rec&&rec.stop()}catch(e){}rec=null;
+  micBtn.classList.remove('on');micBtn.textContent='🎤 マイクON';lvl.style.width='0';statusEl.textContent='マイクOFF'}
+modeSel.addEventListener('change',()=>{if(micOn){try{rec&&rec.stop()}catch(e){}rec=null;startSpeech();
+  statusEl.textContent=modeSel.value==='speech'?'「無駄無駄無駄…」と言ってください':'叫ぶと連打します'}});
+
+const buf=new Float32Array(1024);
+function volumeLoop(){
+  if(!micOn)return;
+  analyser.getFloatTimeDomainData(buf);let sum=0;for(const v of buf)sum+=v*v;const rms=Math.sqrt(sum/buf.length);
+  // 周りの雑音レベルを自動で学習し、それより十分大きい声で反応
+  const th=Math.max(0.006,noise*(1.6+(10-(+sens.value))*0.45));
+  if(rms<th)noise=noise*0.98+rms*0.02;
+  lvl.style.width=Math.min(100,Math.sqrt(rms)*250)+'%';
+  lvl.style.background=rms>th?'var(--glow)':'var(--spirit)';
+  if(modeSel.value==='volume'&&rms>th)rush(700);
+  if(++frameN%15===0)statusEl.textContent=`マイク受信中　音量 ${(rms*1000).toFixed(0)} ／ 反応ライン ${(th*1000).toFixed(0)}`+(rms>th?'　→ ラッシュ！':'');
+  requestAnimationFrame(volumeLoop);
+}
+function startSpeech(){
+  if(modeSel.value!=='speech'||!SR||!micOn)return;
+  rec=new SR();rec.lang='ja-JP';rec.continuous=true;rec.interimResults=true;lastCount=0;
+  rec.onresult=e=>{
+    let txt='';for(let i=e.resultIndex;i<e.results.length;i++)txt+=e.results[i][0].transcript;
+    const n=(txt.match(/無駄|むだ|ムダ|武田|むた/g)||[]).length;
+    if(n>lastCount){rush(600+(n-lastCount)*400);document.getElementById('status').innerHTML='聞こえた：<span id="heard"></span>';
+      document.getElementById('heard').textContent=txt.slice(-24)}
+    lastCount=n;
+    if(e.results[e.results.length-1].isFinal)lastCount=0;
+  };
+  rec.onend=()=>{if(micOn&&modeSel.value==='speech'){try{rec.start()}catch(e){}}};
+  rec.onerror=ev=>{if(ev.error==='not-allowed'||ev.error==='service-not-allowed'){statusEl.textContent='音声認識が使えない環境です。「声の大きさ」モードに切り替えてください'}};
+  try{rec.start()}catch(e){}
+}
+</script>
+</body>
+</html>
