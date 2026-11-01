@@ -35,6 +35,13 @@ input[type=range]{accent-color:var(--glow);width:110px}
 .meter{width:120px;height:8px;border-radius:4px;background:rgba(255,255,255,.15);overflow:hidden}
 .meter i{display:block;height:100%;width:0;background:var(--spirit)}
 #status{width:100%;text-align:center;font-size:13px;opacity:.85;min-height:1.3em}
+.hud{display:flex;gap:18px}
+#timer{color:var(--glow)}
+.panel{position:fixed;left:50%;top:46%;transform:translate(-50%,-50%);width:min(88vw,380px);box-sizing:border-box;text-align:center;background:rgba(20,15,31,.9);border:2px solid var(--glow);border-radius:20px;padding:22px 20px;display:flex;flex-direction:column;gap:8px;align-items:center}
+.panel .big{font-family:var(--display);font-size:clamp(30px,9vw,56px);line-height:1.15;margin:0;color:var(--glow);text-wrap:balance}
+.eyebrow{margin:0;letter-spacing:.2em;font-size:13px;color:var(--spirit)}
+.sub{margin:0;font-size:14px}
+#startBtn{background:var(--hot);border-color:var(--hot);color:#fff;font-size:18px;padding:12px 36px;margin-top:6px}
 #heard{font-family:var(--display);color:var(--glow)}
 </style>
 </head>
@@ -42,8 +49,14 @@ input[type=range]{accent-color:var(--glow);width:110px}
 <canvas id="stage"></canvas>
 <header>
   <h1>バディ・ラッシュ</h1>
-  <div class="combo"><b id="combo">0</b><span>HITS</span></div>
+  <div class="hud"><div class="combo"><b id="timer">15.0</b><span>のこり秒</span></div><div class="combo"><b id="combo">0</b><span>パンチ</span></div></div>
 </header>
+<div id="panel" class="panel">
+  <p class="eyebrow" id="pEyebrow">15秒チャレンジ</p>
+  <p class="big" id="pBig">何回パンチできる？</p>
+  <p class="sub" id="pSub">先にマイクONにしてから、スタート！</p>
+  <button id="startBtn" type="button">スタート</button>
+</div>
 <footer>
   <button id="micBtn" type="button">🎤 マイクON</button>
   <select id="mode" aria-label="反応モード">
@@ -52,7 +65,7 @@ input[type=range]{accent-color:var(--glow);width:110px}
   </select>
   <label for="sens">感度 <input id="sens" type="range" min="1" max="10" value="6"></label>
   <div class="meter" aria-hidden="true"><i id="lvl"></i></div>
-  <button id="tapBtn" type="button">タップで3秒ラッシュ</button>
+  <button id="tapBtn" type="button">連打ボタン</button>
   <div id="status">マイクONを押して「無駄無駄無駄…！」と叫んでください</div>
 </footer>
 <script>
@@ -65,7 +78,29 @@ const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
 let rushUntil=0,combo=0,fists=[],texts=[],shake=0,t0=performance.now(),lastPunch=0,bagHit=0;
 const comboEl=document.getElementById('combo'),statusEl=document.getElementById('status');
 
-function rush(ms){rushUntil=Math.max(rushUntil,performance.now()+ms)}
+// ---- 15秒チャレンジ ----
+const GAME_MS=15000;
+let state='idle',endAt=0,best=0;
+try{best=+localStorage.getItem('buddyRushBest')||0}catch(e){}
+const panel=document.getElementById('panel'),pEyebrow=document.getElementById('pEyebrow'),pBig=document.getElementById('pBig'),pSub=document.getElementById('pSub'),startBtn=document.getElementById('startBtn'),timerEl=document.getElementById('timer');
+if(best)pSub.textContent=`自己ベスト ${best}回 ／ 先にマイクONにしてね`;
+function rush(ms){if(state!=='play')return;rushUntil=Math.max(rushUntil,performance.now()+ms)}
+function startGame(){
+  ensureAudio();combo=0;comboEl.textContent=0;timerEl.textContent=(GAME_MS/1000).toFixed(1);
+  state='countdown';startBtn.hidden=true;pEyebrow.textContent='よーい…';pSub.textContent='';
+  let n=3;pBig.textContent=n;
+  const iv=setInterval(()=>{n--;if(n>0){pBig.textContent=n}else{clearInterval(iv);pBig.textContent='スタート！';
+    state='play';endAt=performance.now()+GAME_MS;setTimeout(()=>{if(state==='play')panel.hidden=true},500)}},800);
+}
+function rankFor(c){return c<80?'ウォーミングアップ中':c<150?'なかなかのバディ':c<220?'ムキムキ級':'伝説のバディ'}
+function finishGame(){
+  state='result';rushUntil=0;timerEl.textContent='0.0';
+  const isBest=combo>best;if(isBest){best=combo;try{localStorage.setItem('buddyRushBest',best)}catch(e){}}
+  pEyebrow.textContent='結果';pBig.textContent=`${combo}回`;
+  pSub.textContent=`${rankFor(combo)}　${isBest?'🎉 自己ベスト更新！':'自己ベスト '+best+'回'}`;
+  startBtn.textContent='もう一回';startBtn.hidden=false;panel.hidden=false;
+}
+startBtn.addEventListener('click',startGame);
 
 // ---- audio (bonk) ----
 let actx=null;
@@ -159,7 +194,8 @@ function drawBag(now){
   ctx.restore();
 }
 function loop(now){
-  const rushing=now<rushUntil;
+  if(state==='play'){const left=Math.max(0,endAt-now);timerEl.textContent=(left/1000).toFixed(1);if(left<=0)finishGame()}
+  const rushing=state==='play'&&now<rushUntil;
   if(rushing&&now-lastPunch>(reduce?160:55)){punch();lastPunch=now}
   ctx.save();
   if(shake>0){ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);shake*=.85}
@@ -195,8 +231,8 @@ function loop(now){
 requestAnimationFrame(loop);
 
 // ---- manual ----
-// 1回押すと3秒間ラッシュ。押すたびに延長
-function tapRush(){ensureAudio();rush(3000)}
+// タップするたびに少しラッシュ（連打すると続く）
+function tapRush(){ensureAudio();rush(400)}
 const tapBtn=document.getElementById('tapBtn');
 tapBtn.addEventListener('click',tapRush);
 cv.addEventListener('click',tapRush);
