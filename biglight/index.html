@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ビッグライトカメラ</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#000;color:#fff;font-family:"Hiragino Sans","Noto Sans JP",sans-serif;overflow:hidden;touch-action:none}
+  #stage{position:fixed;inset:0}
+  canvas{width:100%;height:100%;display:block}
+  video{display:none}
+  #start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:radial-gradient(circle at 50% 40%,#2a2a6a,#000);text-align:center;padding:24px;z-index:5}
+  #start h1{font-size:28px;letter-spacing:.05em}
+  #start p{opacity:.8;line-height:1.7;font-size:14px}
+  .btn{border:none;border-radius:999px;padding:14px 28px;font-size:16px;font-weight:700;cursor:pointer;background:linear-gradient(135deg,#ffe066,#ff9f1c);color:#222;box-shadow:0 4px 20px rgba(255,200,0,.4)}
+  #bar{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:center;gap:10px;padding:14px 12px calc(14px + env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(0,0,0,.7));z-index:3}
+  #bar button{border:none;border-radius:999px;padding:10px 16px;font-size:14px;font-weight:700;background:rgba(255,255,255,.18);color:#fff;backdrop-filter:blur(6px);cursor:pointer}
+  #bar button.main{background:#ffcc33;color:#222}
+  #hint{position:fixed;top:calc(14px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);background:rgba(0,0,0,.5);padding:8px 16px;border-radius:999px;font-size:13px;z-index:3;white-space:nowrap}
+  #err{color:#ff8080;font-size:13px;max-width:320px}
+</style>
+</head>
+<body>
+<div id="start">
+  <h1>🔦 ビッグライトカメラ</h1>
+  <p>画面に映ったものをタップすると<br>光を浴びてぐんぐん大きくなります</p>
+  <button class="btn" id="go">カメラを起動</button>
+  <div id="err"></div>
+</div>
+<div id="stage"><canvas id="cv"></canvas></div>
+<video id="vd" playsinline muted autoplay></video>
+<div id="hint" hidden>大きくしたいものをタップ！</div>
+<div id="bar" hidden>
+  <button id="flip">🔄 カメラ切替</button>
+  <button id="shot" class="main">📸 保存</button>
+  <button id="reset">↩︎ 元に戻す</button>
+</div>
+
+<script>
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+const vd=document.getElementById('vd');
+let facing='environment',stream=null;
+let target=null; // {x,y} in video coords (0-1)
+let scale=1,goal=1,flash=0,t0=0;
+const R=0.14;     // 巨大化させる範囲（画面の短辺に対する半径の割合）
+const MAX=2.6;    // 最大倍率
+
+async function startCam(){
+  try{
+    if(stream)stream.getTracks().forEach(t=>t.stop());
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:1280},height:{ideal:720}},audio:false});
+    vd.srcObject=stream;await vd.play();
+    document.getElementById('start').hidden=true;
+    document.getElementById('bar').hidden=false;
+    document.getElementById('hint').hidden=false;
+  }catch(e){
+    document.getElementById('err').textContent='カメラを起動できませんでした。ブラウザのカメラ許可を確認するか、このページを別のブラウザで開いてください。（'+e.name+'）';
+  }
+}
+document.getElementById('go').onclick=startCam;
+document.getElementById('flip').onclick=()=>{facing=facing==='environment'?'user':'environment';startCam()};
+document.getElementById('reset').onclick=()=>{goal=1};
+document.getElementById('shot').onclick=()=>{
+  const a=document.createElement('a');a.download='biglight.png';a.href=cv.toDataURL('image/png');a.click();
+};
+
+function resize(){const d=devicePixelRatio||1;cv.width=innerWidth*d;cv.height=innerHeight*d}
+addEventListener('resize',resize);resize();
+
+// 画面座標 ↔ 映像の配置（cover表示）
+function layout(){
+  const vw=vd.videoWidth||16,vh=vd.videoHeight||9;
+  const s=Math.max(cv.width/vw,cv.height/vh);
+  return{s,dw:vw*s,dh:vh*s,ox:(cv.width-vw*s)/2,oy:(cv.height-vh*s)/2,vw,vh};
+}
+const mirror=()=>facing==='user';
+
+cv.addEventListener('pointerdown',e=>{
+  if(!stream)return;
+  const d=devicePixelRatio||1,L=layout();
+  let px=e.clientX*d; if(mirror())px=cv.width-px;
+  target={x:(px-L.ox)/L.dw,y:(e.clientY*d-L.oy)/L.dh};
+  scale=1;goal=MAX;flash=1;t0=performance.now();
+  document.getElementById('hint').hidden=true;
+});
+
+function draw(now){
+  requestAnimationFrame(draw);
+  if(!vd.videoWidth)return;
+  const L=layout();
+  ctx.save();
+  if(mirror()){ctx.translate(cv.width,0);ctx.scale(-1,1)}
+  ctx.drawImage(vd,L.ox,L.oy,L.dw,L.dh);
+
+  scale+=(goal-scale)*0.06;
+  if(target&&scale>1.01){
+    const cx=L.ox+target.x*L.dw,cy=L.oy+target.y*L.dh;
+    const r=Math.min(cv.width,cv.height)*R;
+    const wob=1+Math.sin(now/90)*0.012*(goal>1?1:0);  // ぷるぷる感
+    const sc=scale*wob, rr=r*sc;
+    // 影
+    ctx.save();ctx.beginPath();ctx.ellipse(cx,cy+rr*0.95,rr*0.9,rr*0.18,0,0,7);
+    ctx.fillStyle='rgba(0,0,0,.35)';ctx.filter='blur(12px)';ctx.fill();ctx.restore();
+    // 拡大部分（ふちをぼかした円）
+    const off=document.createElement('canvas');off.width=off.height=Math.ceil(rr*2);
+    const o=off.getContext('2d');
+    const sr=r; // 元映像から切り出す半径
+    o.drawImage(cv,0,0,1,1); // dummy
+    o.clearRect(0,0,off.width,off.height);
+    o.drawImage(vd,(cx-sr-L.ox)/L.s,(cy-sr-L.oy)/L.s,sr*2/L.s,sr*2/L.s,0,0,rr*2,rr*2);
+    const g=o.createRadialGradient(rr,rr,rr*0.7,rr,rr,rr);
+    g.addColorStop(0,'rgba(0,0,0,1)');g.addColorStop(1,'rgba(0,0,0,0)');
+    o.globalCompositeOperation='destination-in';o.fillStyle=g;o.fillRect(0,0,rr*2,rr*2);
+    // 下側を基準に大きくなる（足元が固定されて見える）
+    ctx.drawImage(off,cx-rr,cy+r-rr*2+ (rr-r)*0.0);
+    // 光
+    const glow=ctx.createRadialGradient(cx,cy,0,cx,cy,rr*1.3);
+    const a=0.25*flash+0.06;
+    glow.addColorStop(0,`rgba(255,250,200,${a})`);glow.addColorStop(1,'rgba(255,250,200,0)');
+    ctx.fillStyle=glow;ctx.fillRect(cx-rr*1.4,cy-rr*1.4,rr*2.8,rr*2.8);
+  }
+  ctx.restore();
+
+  // ビッグライトの光線
+  if(flash>0.02&&target){
+    const cx=(mirror()?cv.width-(L.ox+target.x*L.dw):(L.ox+target.x*L.dw)),cy=L.oy+target.y*L.dh;
+    ctx.save();ctx.globalAlpha=flash*0.7;
+    const bx=cv.width/2,by=cv.height+40;
+    const gr=ctx.createLinearGradient(bx,by,cx,cy);
+    gr.addColorStop(0,'rgba(255,230,120,.9)');gr.addColorStop(1,'rgba(255,255,220,.15)');
+    ctx.fillStyle=gr;ctx.beginPath();
+    const w=Math.min(cv.width,cv.height)*R*1.6;
+    ctx.moveTo(bx-20,by);ctx.lineTo(cx-w,cy);ctx.lineTo(cx+w,cy);ctx.lineTo(bx+20,by);ctx.closePath();ctx.fill();
+    ctx.restore();
+    flash*=0.965;
+  }
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
